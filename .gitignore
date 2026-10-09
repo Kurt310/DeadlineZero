@@ -1,0 +1,32 @@
+# DeadlineZero monorepo — shared ignores (nested .gitignore files still apply)
+
+# dependencies
+node_modules/
+
+# local env / secrets — never commit real keys (.env.example is the template)
+.env
+
+# Expo / Metro
+dist/
+web-build/
+.expo/
+.metro-health-check*
+
+# Python (backend/)
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+*.iml
+.vscode/*
+
+# debug logs
+npm-debug.*
+yarn-debug.*
+yarn-error.*
