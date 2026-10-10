@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { DZ } from '@/constants/deadline';
 import type { StudySession } from '@/lib/types';
@@ -24,6 +24,15 @@ export function DzRescueDialog({ visible, sessions, onClose, onRescue, rescuing 
   const [missed, setMissed] = useState<string[]>(() =>
     sessions.filter((s) => s.status === 'planned').slice(0, 1).map((s) => s.id),
   );
+
+  // Refresh the pre-selection whenever the plan changes or the dialog opens —
+  // session IDs are regenerated on every plan, so stale IDs are meaningless.
+  useEffect(() => {
+    if (visible) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setMissed(sessions.filter((s) => s.status === 'planned').slice(0, 1).map((s) => s.id));
+    }
+  }, [visible, sessions]);
 
   const toggleMissed = (id: string) => {
     setMissed((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));

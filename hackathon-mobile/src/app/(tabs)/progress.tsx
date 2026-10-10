@@ -1,6 +1,8 @@
-import { SafeAreaView, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { DZ } from '@/constants/deadline';
 import { DzCard } from '@/components/dz-card';
+import { HeaderActions } from '@/components/header-actions';
 import type { Task } from '@/lib/types';
 import { useTasks } from '@/store/tasks';
 
@@ -20,8 +22,11 @@ export default function ProgressScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.safe}>
-      <View style={styles.header}><Text style={styles.title}>Workload & Analytics</Text></View>
+    <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
+      <View style={styles.header}>
+        <Text style={styles.title}>Workload & Analytics</Text>
+        <HeaderActions />
+      </View>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <View style={styles.grid}>
           <Metric title="Completion" value={`${Math.round(rate * 100)}%`} sub={`${completedTasks.length}/${tasks.length} tasks`} color={DZ.primary} />
@@ -85,7 +90,7 @@ function Metric({ title, value, sub, color }: { title: string; value: string; su
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: DZ.mainBackground },
-  header: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 4 },
+  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingTop: 8, paddingBottom: 4 },
   title: { fontSize: 20, fontWeight: '700', color: DZ.mainText },
   content: { padding: 16, paddingBottom: 40 },
   grid: { flexDirection: 'row', gap: 12, marginBottom: 12 },

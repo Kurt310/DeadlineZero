@@ -2,6 +2,7 @@ import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { useEffect } from 'react';
 import { View } from 'react-native';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { LoginScreen } from '@/components/login-screen';
 import { AuthProvider, useAuth } from '@/store/auth';
 import { TasksProvider } from '@/store/tasks';
@@ -34,6 +35,7 @@ function RootNavigator() {
         headerTitleStyle: { fontWeight: '700' },
       }}>
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+      <Stack.Screen name="account" options={{ title: 'Account' }} />
       <Stack.Screen name="task-form" options={{ title: 'Assignment', presentation: 'modal' }} />
       <Stack.Screen name="ai-chat" options={{ title: 'AI Study Coach', presentation: 'modal' }} />
     </Stack>
@@ -42,10 +44,12 @@ function RootNavigator() {
 
 export default function RootLayout() {
   return (
-    <AuthProvider>
-      <TasksProvider>
-        <RootNavigator />
-      </TasksProvider>
-    </AuthProvider>
+    <SafeAreaProvider>
+      <AuthProvider>
+        <TasksProvider>
+          <RootNavigator />
+        </TasksProvider>
+      </AuthProvider>
+    </SafeAreaProvider>
   );
 }

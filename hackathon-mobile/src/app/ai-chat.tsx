@@ -1,14 +1,17 @@
 import { useRef, useState } from 'react';
-import { FlatList, KeyboardAvoidingView, Platform, Pressable, SafeAreaView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { FlatList, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { DZ } from '@/constants/deadline';
-import { DzCard } from '@/components/dz-card';
-import { buildStudyContext, isGeminiConfigured, sendChatMessage, type ChatMessage } from '@/lib/gemini';
+import { buildStudyContext, sendChatMessage, type ChatMessage } from '@/lib/gemini';
 import { useTasks } from '@/store/tasks';
 
 const GREETING: ChatMessage = {
   role: 'model',
-  text: "Hi, I'm your DeadlineZero study coach! Ask me about your workload, how to tackle an assignment, or how to plan your day.",
+  text: "Hi, I'm your DeadlineZero study coach (running locally)! Ask me about your workload, how to tackle an assignment, or how to plan your day.",
 };
+
+const SETUP_HINT =
+  'Local AI is unavailable — start the backend (`uvicorn main:app --host 0.0.0.0 --port 8000`) and Ollama (`ollama serve` + `ollama pull llama3.1:8b`).';
 
 export default function AiChatScreen() {
   const { tasks } = useTasks();
@@ -29,29 +32,15 @@ export default function AiChatScreen() {
       setMessages((prev) => [...prev, { role: 'model', text: reply }]);
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Something went wrong.';
-      setMessages((prev) => [...prev, { role: 'model', text: `Sorry — ${msg}` }]);
+      const hint = /backend|ollama|local ai/i.test(msg) ? `\n\n${SETUP_HINT}` : '';
+      setMessages((prev) => [...prev, { role: 'model', text: `Sorry — ${msg}${hint}` }]);
     } finally {
       setBusy(false);
     }
   };
 
-  if (!isGeminiConfigured) {
-    return (
-      <SafeAreaView style={styles.safe}>
-        <View style={styles.setupWrap}>
-          <DzCard>
-            <Text style={styles.setupTitle}>AI coach is not set up yet</Text>
-            <Text style={styles.setupTxt}>
-              Add your Google AI Studio key to hackathon-mobile/.env as EXPO_PUBLIC_GEMINI_API_KEY, then restart Expo.
-            </Text>
-          </DzCard>
-        </View>
-      </SafeAreaView>
-    );
-  }
-
   return (
-    <SafeAreaView style={styles.safe}>
+    <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
       <KeyboardAvoidingView
         style={styles.flex}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
@@ -95,9 +84,6 @@ export default function AiChatScreen() {
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: DZ.mainBackground },
   flex: { flex: 1 },
-  setupWrap: { flex: 1, padding: 20, justifyContent: 'center' },
-  setupTitle: { fontSize: 16, fontWeight: '700', color: DZ.mainText },
-  setupTxt: { fontSize: 13, color: DZ.secondaryText, marginTop: 8, lineHeight: 19 },
   list: { padding: 16, paddingBottom: 8, gap: 10 },
   row: { flexDirection: 'row' },
   rowRight: { justifyContent: 'flex-end' },

@@ -1,14 +1,18 @@
+import { API_BASE_URL } from './planner';
 import type { StudySession, Task } from './types';
 
-const apiKey = process.env.EXPO_PUBLIC_GEMINI_API_KEY ?? '';
+/**
+ * Local-AI client — talks to the FastAPI backend (/api/ai/*), which proxies
+ * to Ollama running on the dev PC. No API keys on the device.
+ */
 
-export const GEMINI_MODEL =
-  process.env.EXPO_PUBLIC_GEMINI_MODEL && process.env.EXPO_PUBLIC_GEMINI_MODEL.length > 0
-    ? process.env.EXPO_PUBLIC_GEMINI_MODEL
-    : 'gemini-3.8-flash';
+export const LOCAL_AI_MODEL = 'local-ollama';
 
-/** False until a Google AI Studio key is set — AI UI shows a setup hint. */
-export const isGeminiConfigured = apiKey.length > 0;
+/** @deprecated Use isAiConfigured. Kept so old imports don't break. */
+export const GEMINI_MODEL = LOCAL_AI_MODEL;
+/** Always true — local AI needs no key; backend health determines availability. */
+export const isGeminiConfigured = true;
+export const isAiConfigured = true;
 
 export interface ChatMessage {
   role: 'user' | 'model';
@@ -26,71 +30,38 @@ export interface EnrichedTask {
   difficulty?: number;
 }
 
-interface GeminiPart {
-  text?: string;
-}
-
-interface GeminiResponse {
-  candidates?: { content?: { parts?: GeminiPart[] }; finishReason?: string }[];
-  promptFeedback?: { blockReason?: string };
-  error?: { message?: string };
-}
-
-async function callGemini(system: string, contents: { role: string; parts: GeminiPart[] }[]): Promise<string> {
-  if (!isGeminiConfigured) {
-    throw new Error('Gemini API key is not set. Add EXPO_PUBLIC_GEMINI_API_KEY to .env and restart Expo.');
-  }
+async function postAI(path: string, body: unknown, timeoutMs: number): Promise<Record<string, unknown>> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 45000);
-  const payload = {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-    body: JSON.stringify({
-      system_instruction: { parts: [{ text: system }] },
-      contents,
-      generationConfig: { temperature: 0.7, maxOutputTokens: 1024 },
-    }),
-    signal: controller.signal,
-  };
-  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-  const post = (attempt: number): Promise<Response> =>
-    fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
-      payload,
-    ).then((res) => {
-      // Transient model overload: one automatic retry after a short wait.
-      if ((res.status === 503 || res.status === 500) && attempt === 0) {
-        return sleep(1500).then(() => post(1));
-      }
-      return res;
-    });
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await post(0);
-    const data = (await res.json().catch(() => ({}))) as GeminiResponse;
+    const res = await fetch(`${API_BASE_URL}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
     if (!res.ok) {
-      if (res.status === 400 || res.status === 401 || res.status === 403) {
-        throw new Error(data.error?.message ?? 'Gemini rejected the request — check your API key.');
+      const detail = typeof data.detail === 'string' ? data.detail : null;
+      if (res.status === 422) throw new Error(detail ?? 'Invalid AI request.');
+      if (res.status === 502 || res.status === 504) {
+        throw new Error(
+          detail ?? 'Local AI is unavailable — start the backend (`uvicorn main:app`) and Ollama (`ollama serve`).',
+        );
       }
-      if (res.status === 404) {
-        throw new Error(`Model "${GEMINI_MODEL}" not found — check EXPO_PUBLIC_GEMINI_MODEL.`);
-      }
-      if (res.status === 429) {
-        throw new Error('Gemini quota exceeded — try again in a bit.');
-      }
-      throw new Error(data.error?.message ?? `Gemini request failed (${res.status}).`);
+      throw new Error(detail ?? `Local AI request failed (${res.status}).`);
     }
-    const text = (data.candidates?.[0]?.content?.parts ?? [])
-      .map((p) => p.text ?? '')
-      .join('')
-      .trim();
-    if (text.length > 0) return text;
-    const blocked = data.promptFeedback?.blockReason ?? data.candidates?.[0]?.finishReason;
-    throw new Error(blocked ? `Gemini blocked the response (${blocked}).` : 'Gemini returned an empty response.');
+    return data;
   } catch (e) {
     if (e instanceof Error && e.name === 'AbortError') {
-      throw new Error('Gemini timed out — check your connection and try again.');
+      throw new Error('Local AI timed out — try a smaller model or try again.');
     }
-    throw e instanceof Error ? e : new Error('Gemini request failed.');
+    if (e instanceof TypeError) {
+      throw new Error(
+        'Cannot reach the planner backend — start it (`uvicorn main:app --host 0.0.0.0 --port 8000`) and check your connection.',
+      );
+    }
+    throw e instanceof Error ? e : new Error('Local AI request failed.');
   } finally {
     clearTimeout(timer);
   }
@@ -115,57 +86,43 @@ export function buildStudyContext(tasks: Task[], sessions: StudySession[]): stri
   ].join('\n');
 }
 
-const COACH_SYSTEM =
-  'You are DeadlineZero, a friendly AI study coach inside a student planner app. ' +
-  'Be concise, encouraging, and practical. Use short paragraphs and simple bullet lists. ' +
-  'Never use markdown tables. When asked about planning, refer to the concrete tasks and sessions below.';
-
 export async function sendChatMessage(history: ChatMessage[], context: string): Promise<string> {
-  const today = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
-  const system = `${COACH_SYSTEM}\nToday is ${today}.\n\nStudent context:\n${context}`;
-  return callGemini(
-    system,
-    history.map((m) => ({ role: m.role, parts: [{ text: m.text }] })),
+  const data = await postAI(
+    '/api/ai/chat',
+    {
+      messages: history.map((m) => ({ role: m.role === 'model' ? 'model' : 'user', text: m.text })),
+      context,
+    },
+    90000,
   );
+  const reply = typeof data.reply === 'string' ? data.reply.trim() : '';
+  if (!reply) throw new Error('Local AI returned an empty response.');
+  return reply;
 }
 
 export async function enrichTask(freeText: string): Promise<EnrichedTask> {
-  const today = new Date().toISOString();
-  const system =
-    'Extract a student assignment from the user text. Respond with ONLY a JSON object, no code fences, ' +
-    'with keys: title (string, required), subject (string, required, guess the course), ' +
-    'description (string, optional), dueAt (ISO 8601 datetime string, only if the text mentions a date, day, or deadline), ' +
-    'estimatedMinutes (number 15-360, default 60), importance (1-5, default 3), difficulty (1-5, default 3).';
-  const raw = await callGemini(system, [
-    { role: 'user', parts: [{ text: `Today is ${today}. Assignment text: ${freeText}` }] },
-  ]);
-  const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
-  let parsed: Record<string, unknown>;
-  try {
-    parsed = JSON.parse(cleaned) as Record<string, unknown>;
-  } catch {
-    throw new Error('Gemini returned an unreadable answer — try rephrasing.');
-  }
-  const title = typeof parsed.title === 'string' ? parsed.title.trim() : '';
-  if (!title) throw new Error('Gemini could not find a title — try rephrasing.');
+  const data = await postAI('/api/ai/enrich', { text: freeText }, 60000);
+  const title = typeof data.title === 'string' ? data.title.trim() : '';
+  if (!title) throw new Error('Local AI could not find a title — try rephrasing.');
   const clamp = (v: unknown, fallback: number) =>
     typeof v === 'number' && Number.isFinite(v) ? Math.min(5, Math.max(1, Math.round(v))) : fallback;
   const minutes =
-    typeof parsed.estimatedMinutes === 'number' && Number.isFinite(parsed.estimatedMinutes)
-      ? Math.min(360, Math.max(15, Math.round(parsed.estimatedMinutes)))
+    typeof data.estimatedMinutes === 'number' && Number.isFinite(data.estimatedMinutes)
+      ? Math.min(360, Math.max(15, Math.round(data.estimatedMinutes)))
       : 60;
   const result: EnrichedTask = {
     title,
-    subject: typeof parsed.subject === 'string' && parsed.subject.trim() ? parsed.subject.trim() : 'General',
+    subject: typeof data.subject === 'string' && data.subject.trim() ? data.subject.trim() : 'General',
     estimatedMinutes: minutes,
-    importance: clamp(parsed.importance, 3),
-    difficulty: clamp(parsed.difficulty, 3),
+    importance: clamp(data.importance, 3),
+    difficulty: clamp(data.difficulty, 3),
   };
-  if (typeof parsed.description === 'string' && parsed.description.trim()) {
-    result.description = parsed.description.trim();
+  if (typeof data.description === 'string' && data.description.trim()) {
+    result.description = data.description.trim();
   }
-  if (typeof parsed.dueAt === 'string' && !Number.isNaN(new Date(parsed.dueAt).getTime())) {
-    result.dueAtISO = new Date(parsed.dueAt).toISOString();
+  const dueRaw = (data.dueAtISO ?? data.dueAt) as unknown;
+  if (typeof dueRaw === 'string' && !Number.isNaN(new Date(dueRaw).getTime())) {
+    result.dueAtISO = new Date(dueRaw).toISOString();
   }
   return result;
 }

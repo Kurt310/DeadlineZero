@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Pressable, RefreshControl, SafeAreaView, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { DZ } from '@/constants/deadline';
 import { DzCard } from '@/components/dz-card';
@@ -7,6 +8,7 @@ import { DzEmpty } from '@/components/dz-empty';
 import { DzProgressCard } from '@/components/dz-progress-card';
 import { DzRescueDialog } from '@/components/dz-rescue-dialog';
 import { DzTaskCard } from '@/components/dz-task-card';
+import { HeaderActions } from '@/components/header-actions';
 import { formatLongDate, greeting, formatTime } from '@/lib/format';
 import { generatePlan, rescueSchedule } from '@/lib/planner';
 import { sessionDurationMinutes, type StudySession } from '@/lib/types';
@@ -15,6 +17,7 @@ import { useTasks } from '@/store/tasks';
 export default function DashboardScreen() {
   const { tasks, completedTasks, urgentTasks, toggleComplete } = useTasks();
   const [sessions, setSessions] = useState<StudySession[]>([]);
+  const [unscheduled, setUnscheduled] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [rescueOpen, setRescueOpen] = useState(false);
@@ -26,6 +29,7 @@ export default function DashboardScreen() {
     try {
       const res = await generatePlan(180, new Date(), tasks.filter((t) => t.status !== 'completed'));
       setSessions(res.sessions);
+      setUnscheduled(res.unscheduledTaskIds);
     } finally {
       setLoading(false);
     }
@@ -47,8 +51,15 @@ export default function DashboardScreen() {
   const onRescue = async (remaining: number, reason: string, missedIds: string[]) => {
     setRescuing(true);
     try {
-      const res = await rescueSchedule(remaining, new Date(), tasks.filter((t) => t.status !== 'completed'), missedIds.length, reason);
+      const eligible = tasks.filter((t) => t.status !== 'completed');
+      if (eligible.length === 0) {
+        setNotice('Nothing to rescue — no pending assignments.');
+        setRescueOpen(false);
+        return;
+      }
+      const res = await rescueSchedule(remaining, new Date(), eligible, missedIds, reason);
       setSessions(res.sessions);
+      setUnscheduled(res.unscheduledTaskIds);
       setNotice(`Schedule rescued! Re-allocated remaining ${remaining}m around your highest-leverage deadlines (${missedIds.length} missed block${missedIds.length === 1 ? '' : 's'}).`);
       setRescueOpen(false);
     } finally {
@@ -60,16 +71,14 @@ export default function DashboardScreen() {
   const plannedMinutes = sessions.reduce((s, x) => s + sessionDurationMinutes(x), 0);
 
   return (
-    <SafeAreaView style={styles.safe}>
+    <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
       <View style={styles.header}>
         <View>
           <Text style={styles.hello}>{greeting()}, Scholar</Text>
           <Text style={styles.date}>{formatLongDate(new Date())}</Text>
         </View>
         <View style={styles.headerRight}>
-          <Pressable onPress={() => router.push('/ai-chat')} accessibilityLabel="AI study coach">
-            <Text style={styles.aiBtn}>✨ AI</Text>
-          </Pressable>
+          <HeaderActions />
           <Pressable onPress={() => router.push('/task-form')} style={styles.addBtn} accessibilityLabel="Add assignment">
             <Text style={styles.addTxt}>＋</Text>
           </Pressable>
@@ -84,6 +93,12 @@ export default function DashboardScreen() {
           <DzCard backgroundColor={DZ.softAccent} borderColor={DZ.primary} style={styles.notice}>
             <Text style={styles.noticeTxt}>{notice}</Text>
             <Pressable onPress={() => setNotice(null)}><Text style={styles.dismiss}>✕</Text></Pressable>
+          </DzCard>
+        ) : null}
+
+        {unscheduled.length > 0 ? (
+          <DzCard backgroundColor={DZ.warningBackground} borderColor={DZ.warningBorder} style={styles.notice}>
+            <Text style={styles.noticeTxt}>{unscheduled.length} task{unscheduled.length === 1 ? '' : 's'} exceeded today&apos;s study budget and {unscheduled.length === 1 ? 'stays' : 'stay'} prioritized for the next session.</Text>
           </DzCard>
         ) : null}
 
@@ -149,7 +164,7 @@ export default function DashboardScreen() {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: DZ.mainBackground },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingTop: 12, paddingBottom: 4 },
+  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingTop: 8, paddingBottom: 4 },
   headerRight: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   hello: { fontSize: 18, fontWeight: '700', color: DZ.mainText },
   date: { fontSize: 12, color: DZ.secondaryText, marginTop: 2 },

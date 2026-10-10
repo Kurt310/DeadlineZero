@@ -19,8 +19,8 @@ export default function AppTabs() {
       <TabSlot style={{ height: '100%' }} />
       <TabList asChild>
         <CustomTabList>
-          {/* "/" is the real URL for (tabs)/index; "/index" does not resolve at runtime. */}
-          <TabTrigger name="index" href={'/' as '/index'} asChild>
+          {/* "/" is the real URL for (tabs)/index; cast to any for router route typing. */}
+          <TabTrigger name="index" href={'/' as any} asChild>
             <TabButton>Home</TabButton>
           </TabTrigger>
           <TabTrigger name="tasks" href="/tasks" asChild>
@@ -31,9 +31,6 @@ export default function AppTabs() {
           </TabTrigger>
           <TabTrigger name="progress" href="/progress" asChild>
             <TabButton>Progress</TabButton>
-          </TabTrigger>
-          <TabTrigger name="account" href="/account" asChild>
-            <TabButton>Account</TabButton>
           </TabTrigger>
         </CustomTabList>
       </TabList>

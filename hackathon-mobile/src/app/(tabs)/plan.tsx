@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { DZ } from '@/constants/deadline';
 import { DzCard } from '@/components/dz-card';
 import { DzEmpty } from '@/components/dz-empty';
 import { DzRescueDialog } from '@/components/dz-rescue-dialog';
+import { HeaderActions } from '@/components/header-actions';
 import { formatTime } from '@/lib/format';
 import { generatePlan, rescueSchedule } from '@/lib/planner';
 import { sessionDurationMinutes, type StudySession } from '@/lib/types';
@@ -20,15 +22,18 @@ export default function PlanScreen() {
   const [rescueOpen, setRescueOpen] = useState(false);
   const [rescuing, setRescuing] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const reqId = useRef(0);
 
   const runGenerate = useCallback(async (mins: number) => {
+    const myReq = ++reqId.current;
     setGenerating(true);
     try {
       const res = await generatePlan(mins, new Date(), pendingTasks);
+      if (myReq !== reqId.current) return; // stale response — ignore
       setSessions(res.sessions);
       setUnscheduled(res.unscheduledTaskIds);
     } finally {
-      setGenerating(false);
+      if (myReq === reqId.current) setGenerating(false);
     }
   }, [pendingTasks]);
 
@@ -47,7 +52,12 @@ export default function PlanScreen() {
   const onRescue = async (remaining: number, reason: string, missedIds: string[]) => {
     setRescuing(true);
     try {
-      const res = await rescueSchedule(remaining, new Date(), pendingTasks, missedIds.length, reason);
+      if (pendingTasks.length === 0) {
+        setNotice('Nothing to rescue — no pending assignments.');
+        setRescueOpen(false);
+        return;
+      }
+      const res = await rescueSchedule(remaining, new Date(), pendingTasks, missedIds, reason);
       setSessions(res.sessions);
       setUnscheduled(res.unscheduledTaskIds);
       setNotice(`Schedule rescued! Re-allocated remaining ${remaining}m (${missedIds.length} missed block${missedIds.length === 1 ? '' : 's'}).`);
@@ -64,13 +74,14 @@ export default function PlanScreen() {
   const totalMins = sessions.reduce((s, x) => s + sessionDurationMinutes(x), 0);
 
   return (
-    <SafeAreaView style={styles.safe}>
+    <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
       <View style={styles.header}>
         <Text style={styles.title}>Study Plan</Text>
         <View style={styles.headerRight}>
           <Pressable onPress={() => runGenerate(budget)} disabled={generating}>
             <Text style={styles.refresh}>⟳ Regenerate</Text>
           </Pressable>
+          <HeaderActions />
         </View>
       </View>
 
@@ -168,7 +179,7 @@ export default function PlanScreen() {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: DZ.mainBackground },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingTop: 12, paddingBottom: 4 },
+  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingTop: 8, paddingBottom: 4 },
   headerRight: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   title: { fontSize: 20, fontWeight: '700', color: DZ.mainText },
   refresh: { color: DZ.primary, fontWeight: '600', fontSize: 13 },

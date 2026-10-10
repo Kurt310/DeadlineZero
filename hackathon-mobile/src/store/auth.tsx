@@ -16,7 +16,7 @@ interface AuthState {
   signOut: () => Promise<void>;
 }
 
-const GUEST_ID = 'guest-user';
+export const GUEST_ID = 'guest-user';
 
 const AuthContext = createContext<AuthState | null>(null);
 

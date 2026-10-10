@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { DZ } from '@/constants/deadline';
-import { enrichTask, isGeminiConfigured } from '@/lib/gemini';
+import { enrichTask } from '@/lib/gemini';
 import type { Task, TaskStatus } from '@/lib/types';
 
 const SUBJECTS = ['Database Systems', 'Algorithms', 'Web Development', 'Computer Networks', 'Calculus', 'General'];
@@ -14,6 +14,53 @@ interface Props {
 
 function pad(n: number): string {
   return n < 10 ? `0${n}` : `${n}`;
+}
+
+function newTaskId(initialId?: string): string {
+  if (initialId) return initialId;
+  try {
+    const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
+    if (c?.randomUUID) return `task-${c.randomUUID()}`;
+  } catch { /* fall through */ }
+  return `task-${Date.now()}-${Math.floor(Math.random() * 1e9).toString(36)}`;
+}
+
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+/** Strict local YYYY-MM-DD + HH:MM → Date, or null. Rejects overflow like Feb 30. */
+export function parseLocalDeadline(date: string, time: string): Date | null {
+  const d = date.trim();
+  const t = time.trim();
+  if (!DATE_RE.test(d) || !TIME_RE.test(t)) return null;
+  const [y, m, day] = d.split('-').map(Number);
+  const [h, mi] = t.split(':').map(Number);
+  const parsed = new Date(y, m - 1, day, h, mi, 0, 0);
+  if (
+    parsed.getFullYear() !== y ||
+    parsed.getMonth() !== m - 1 ||
+    parsed.getDate() !== day ||
+    parsed.getHours() !== h ||
+    parsed.getMinutes() !== mi
+  ) {
+    return null;
+  }
+  return parsed;
+}
+
+/** AI ISO → local date/time fields. Date-only strings become local noon (never UTC-midnight shift). */
+function splitISOToLocalFields(iso: string): { date: string; time: string } | null {
+  const s = iso.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    return { date: s, time: '12:00' };
+  }
+  const ms = Date.parse(s);
+  if (Number.isNaN(ms)) return null;
+  const d = new Date(ms);
+  return {
+    date: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`,
+    time: `${pad(d.getHours())}:${pad(d.getMinutes())}`,
+  };
 }
 
 export function DzTaskForm({ initial, saving, onSave }: Props) {
@@ -45,9 +92,11 @@ export function DzTaskForm({ initial, saving, onSave }: Props) {
       if (r.importance) setImportance(r.importance);
       if (r.difficulty) setDifficulty(r.difficulty);
       if (r.dueAtISO) {
-        const d = new Date(r.dueAtISO);
-        setDate(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`);
-        setTime(`${pad(d.getHours())}:${pad(d.getMinutes())}`);
+        const fields = splitISOToLocalFields(r.dueAtISO);
+        if (fields) {
+          setDate(fields.date);
+          setTime(fields.time);
+        }
       }
     } catch (e) {
       setAiError(e instanceof Error ? e.message : 'AI fill failed.');
@@ -61,26 +110,39 @@ export function DzTaskForm({ initial, saving, onSave }: Props) {
   };
 
   const submit = () => {
-    if (!title.trim()) {
+    const cleanTitle = title.trim();
+    if (!cleanTitle) {
       setError('Please enter a title for the assignment');
       return;
     }
-    const parsed = new Date(`${date}T${time.length === 5 ? time : `${time}:00`}`);
-    if (Number.isNaN(parsed.getTime())) {
-      setError('Use YYYY-MM-DD and HH:MM for the deadline');
+    if (cleanTitle.length > 140) {
+      setError('Title is too long (max 140 characters)');
       return;
     }
+    const cleanSubject = subject.trim() || 'General';
+    if (cleanSubject.length > 80) {
+      setError('Subject is too long (max 80 characters)');
+      return;
+    }
+    const parsed = parseLocalDeadline(date, time);
+    if (!parsed) {
+      setError('Use a real date as YYYY-MM-DD and time as HH:MM (e.g. 2026-10-12, 14:00)');
+      return;
+    }
+    const minutes = Math.min(360, Math.max(15, Math.round(estimated)));
+    const imp = Math.min(5, Math.max(1, Math.round(importance)));
+    const diff = Math.min(5, Math.max(1, Math.round(difficulty)));
     setError('');
     onSave({
-      id: initial?.id ?? `task-${Date.now()}`,
-      userId: initial?.userId ?? 'guest-user',
-      title: title.trim(),
-      subject: subject.trim() || 'General',
-      description: description.trim() || undefined,
+      id: newTaskId(initial?.id),
+      userId: initial?.userId ?? '',
+      title: cleanTitle,
+      subject: cleanSubject,
+      description: description.trim() ? description.trim().slice(0, 2000) : undefined,
       dueAt: parsed.toISOString(),
-      estimatedMinutes: estimated,
-      importance,
-      difficulty,
+      estimatedMinutes: minutes,
+      importance: imp,
+      difficulty: diff,
       status: (initial?.status ?? 'pending') as TaskStatus,
       createdAt: initial?.createdAt ?? new Date().toISOString(),
     });
@@ -90,14 +152,12 @@ export function DzTaskForm({ initial, saving, onSave }: Props) {
     <ScrollView style={styles.wrap} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
       <Text style={styles.label}>Task Title</Text>
       <TextInput value={title} onChangeText={setTitle} placeholder="e.g. Database Normalization Practice" style={styles.input} placeholderTextColor={DZ.secondaryText} />
-      {isGeminiConfigured ? (
-        <View>
-          <Pressable onPress={aiFill} disabled={aiBusy || !title.trim()} style={[styles.aiBtn, (aiBusy || !title.trim()) && styles.disabled]}>
-            <Text style={styles.aiBtnTxt}>{aiBusy ? '✨ Thinking…' : '✨ AI Fill from title'}</Text>
-          </Pressable>
-          {aiError ? <Text style={styles.aiError}>{aiError}</Text> : null}
-        </View>
-      ) : null}
+      <View>
+        <Pressable onPress={aiFill} disabled={aiBusy || !title.trim()} style={[styles.aiBtn, (aiBusy || !title.trim()) && styles.disabled]}>
+          <Text style={styles.aiBtnTxt}>{aiBusy ? '✨ Thinking… (local AI)' : '✨ AI Fill from title'}</Text>
+        </Pressable>
+        {aiError ? <Text style={styles.aiError}>{aiError}</Text> : null}
+      </View>
 
       <Text style={styles.label}>Subject / Course</Text>
       <TextInput value={subject} onChangeText={setSubject} placeholder="Course name or tag" style={styles.input} placeholderTextColor={DZ.secondaryText} />

@@ -1,26 +1,19 @@
 import { useMemo, useState } from 'react';
-import { Alert, FlatList, Pressable, SafeAreaView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { FlatList, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { DZ } from '@/constants/deadline';
 import { DzEmpty } from '@/components/dz-empty';
 import { DzTaskCard } from '@/components/dz-task-card';
-import { useAuth } from '@/store/auth';
+import { HeaderActions } from '@/components/header-actions';
 import { useTasks } from '@/store/tasks';
 
 type Filter = 'all' | 'pending' | 'completed';
 
 export default function TasksScreen() {
   const { tasks, pendingTasks, completedTasks, toggleComplete, deleteTask, refresh } = useTasks();
-  const { signOut, email } = useAuth();
   const [filter, setFilter] = useState<Filter>('all');
   const [query, setQuery] = useState('');
-
-  const confirmSignOut = () => {
-    Alert.alert('Sign out?', email ? `Signed in as ${email}.` : 'Return to the login screen.', [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Sign Out', style: 'destructive', onPress: () => { signOut().catch(() => {}); } },
-    ]);
-  };
 
   const list = useMemo(() => {
     const base = filter === 'pending' ? pendingTasks : filter === 'completed' ? completedTasks : tasks;
@@ -30,16 +23,14 @@ export default function TasksScreen() {
   }, [filter, pendingTasks, completedTasks, tasks, query]);
 
   return (
-    <SafeAreaView style={styles.safe}>
+    <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
       <View style={styles.header}>
         <Text style={styles.title}>My Assignments</Text>
         <View style={styles.headerActions}>
-          <Pressable onPress={refresh} accessibilityLabel="Reload tasks">
+          <Pressable onPress={() => { void refresh(); }} accessibilityLabel="Reload tasks">
             <Text style={styles.headerBtn}>⟳</Text>
           </Pressable>
-          <Pressable onPress={confirmSignOut} accessibilityLabel="Sign out">
-            <Text style={styles.headerBtn}>⏻</Text>
-          </Pressable>
+          <HeaderActions />
         </View>
       </View>
       <View style={styles.searchWrap}>
@@ -98,7 +89,7 @@ function FilterChip({ label, on, onPress }: { label: string; on: boolean; onPres
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: DZ.mainBackground },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingTop: 12, paddingBottom: 4 },
+  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingTop: 8, paddingBottom: 4 },
   title: { fontSize: 20, fontWeight: '700', color: DZ.mainText },
   headerActions: { flexDirection: 'row', alignItems: 'center', gap: 16 },
   headerBtn: { fontSize: 20, color: DZ.secondaryText, fontWeight: '700' },

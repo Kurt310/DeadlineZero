@@ -117,9 +117,10 @@ export async function rescueSchedule(
   remainingMinutes: number,
   resumeTime: Date,
   unfinishedTasks: Task[],
-  missedCount: number,
+  missed: string[] | number,
   reasonNotes: string,
 ): Promise<GeneratedPlanResult> {
+  const missedIds = Array.isArray(missed) ? missed : [];
   // Try dedicated rescue endpoint first, fall back to generate contract.
   try {
     const res = await fetchWithTimeout(
@@ -130,7 +131,7 @@ export async function rescueSchedule(
         body: JSON.stringify({
           remaining_minutes: remainingMinutes,
           resume_time: resumeTime.toISOString(),
-          missed_session_ids: [],
+          missed_session_ids: missedIds,
           reason: reasonNotes,
           tasks: unfinishedTasks.filter((t) => t.status !== 'completed').map(toApiTask),
         }),
@@ -146,7 +147,6 @@ export async function rescueSchedule(
     // fall through to generatePlan
   }
   const plan = await generatePlan(remainingMinutes, resumeTime, unfinishedTasks);
-  void missedCount;
   return plan;
 }
 
@@ -156,27 +156,36 @@ export function localFallbackPlan(
   dayStart: Date,
   tasks: Task[],
 ): GeneratedPlanResult {
-  const sorted = [...tasks].sort((a, b) => {
-    const daysA = (new Date(a.dueAt).getTime() - Date.now()) / 86400000;
-    const daysB = (new Date(b.dueAt).getTime() - Date.now()) / 86400000;
-    const scoreA = a.importance * 3 + a.difficulty * 2 - daysA * 1.5;
-    const scoreB = b.importance * 3 + b.difficulty * 2 - daysB * 1.5;
-    return scoreB - scoreA;
-  });
+  const scoreOf = (t: Task) => {
+    const ms = new Date(t.dueAt).getTime();
+    const days = Number.isNaN(ms) ? 365 : (ms - Date.now()) / 86400000;
+    return t.importance * 3 + t.difficulty * 2 - days * 1.5;
+  };
+  const sorted = [...tasks].sort((a, b) => scoreOf(b) - scoreOf(a));
 
   let remaining = availableMinutes;
   let slot = new Date(dayStart);
   const sessions: StudySession[] = [];
   const unscheduled: string[] = [];
 
-  for (const task of sorted) {
+  for (let i = 0; i < sorted.length; i++) {
+    const task = sorted[i];
     if (remaining < 25) {
       unscheduled.push(task.id);
       continue;
     }
-    const duration = Math.min(task.estimatedMinutes, remaining > 50 ? 50 : remaining, Math.max(25, remaining));
-    const end = new Date(slot.getTime() + Math.max(25, duration) * 60000);
-    const daysLeft = Math.max(0, Math.round((new Date(task.dueAt).getTime() - Date.now()) / 86400000));
+    const rawDuration = Number.isFinite(task.estimatedMinutes) ? task.estimatedMinutes : 60;
+    const duration = Math.max(25, Math.min(rawDuration, remaining > 50 ? 50 : remaining));
+    const end = new Date(slot.getTime() + duration * 60000);
+    const dueMs = new Date(task.dueAt).getTime();
+    const daysRounded = Number.isNaN(dueMs)
+      ? 0
+      : Math.round((dueMs - Date.now()) / 86400000);
+    const dueLabel = Number.isNaN(dueMs)
+      ? 'no due date'
+      : daysRounded < 0
+        ? `overdue by ${Math.abs(daysRounded)}d`
+        : `due in ${daysRounded}d`;
     sessions.push({
       id: `sess-gen-${sessions.length + 1}`,
       userId: task.userId,
@@ -185,11 +194,13 @@ export function localFallbackPlan(
       startsAt: slot.toISOString(),
       endsAt: end.toISOString(),
       status: 'planned',
-      reason: `High priority due in ${daysLeft}d; Importance: ${task.importance}/5`,
+      reason: `High priority ${dueLabel}; Importance: ${task.importance}/5`,
       createdAt: new Date().toISOString(),
     });
-    remaining -= Math.max(25, duration);
-    if (remaining >= 15) {
+    remaining -= duration;
+    // Only charge a break when another block can still follow (mirrors backend).
+    const hasMore = i + 1 < sorted.length;
+    if (hasMore && remaining - 10 >= 25) {
       slot = new Date(end.getTime() + 10 * 60000);
       remaining -= 10;
     } else {

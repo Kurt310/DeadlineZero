@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { Alert, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { DZ } from '@/constants/deadline';
 import { DzCard } from '@/components/dz-card';
 import { supabase } from '@/lib/supabase';
@@ -53,7 +54,7 @@ export default function AccountScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.safe}>
+    <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <DzCard>
           <Text style={styles.label}>Signed in as</Text>

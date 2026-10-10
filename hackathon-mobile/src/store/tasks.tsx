@@ -1,6 +1,6 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { supabase } from '@/lib/supabase';
-import { useAuth } from '@/store/auth';
+import { GUEST_ID, useAuth } from '@/store/auth';
 import type { Task, TaskStatus } from '@/lib/types';
 
 interface TasksState {
@@ -11,16 +11,15 @@ interface TasksState {
   completedTasks: Task[];
   urgentTasks: Task[];
   getById: (id: string) => Task | undefined;
-  createTask: (t: Task) => void;
-  updateTask: (t: Task) => void;
-  toggleComplete: (id: string) => void;
-  deleteTask: (id: string) => void;
-  refresh: () => void;
+  createTask: (t: Task) => Promise<void>;
+  updateTask: (t: Task) => Promise<void>;
+  toggleComplete: (id: string) => Promise<void>;
+  deleteTask: (id: string) => Promise<void>;
+  refresh: () => Promise<void>;
   setSessionStatus: (taskId: string, _status: string) => void;
 }
 
 const TasksContext = createContext<TasksState | null>(null);
-const GUEST_ID = 'guest-user';
 
 /** Raw row shape of public.tasks (matches supabase/schema.sql). */
 interface TaskRow {
@@ -37,23 +36,30 @@ interface TaskRow {
   created_at: string;
 }
 
+function normalizeISO(raw: string, fallback: string): string {
+  const ms = Date.parse(raw);
+  if (Number.isNaN(ms)) return fallback;
+  return new Date(ms).toISOString();
+}
+
 function fromRow(r: TaskRow): Task {
+  const nowISO = new Date().toISOString();
   return {
     id: r.id,
     userId: r.user_id,
     title: r.title,
     subject: r.subject,
     description: r.description ?? undefined,
-    dueAt: r.due_at,
+    dueAt: normalizeISO(r.due_at, nowISO),
     estimatedMinutes: r.estimated_minutes,
     importance: r.importance,
     difficulty: r.difficulty,
     status: r.status,
-    createdAt: r.created_at,
+    createdAt: normalizeISO(r.created_at, nowISO),
   };
 }
 
-function toRow(t: Task): TaskRow {
+function toInsertRow(t: Task): Omit<TaskRow, 'created_at'> & { created_at?: string } {
   return {
     id: t.id,
     user_id: t.userId,
@@ -65,7 +71,20 @@ function toRow(t: Task): TaskRow {
     importance: t.importance,
     difficulty: t.difficulty,
     status: t.status,
-    created_at: t.createdAt,
+  };
+}
+
+/** Only mutable columns — never rewrite id / user_id / created_at on UPDATE. */
+function toUpdateRow(t: Task): Partial<TaskRow> {
+  return {
+    title: t.title,
+    subject: t.subject,
+    description: t.description ?? null,
+    due_at: t.dueAt,
+    estimated_minutes: t.estimatedMinutes,
+    importance: t.importance,
+    difficulty: t.difficulty,
+    status: t.status,
   };
 }
 
@@ -135,112 +154,128 @@ export function TasksProvider({ children }: { children: ReactNode }) {
   const [tasks, setTasks] = useState<Task[]>(seedTasks);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const requestId = useRef(0);
+  const tasksRef = useRef(tasks);
+  useEffect(() => {
+    tasksRef.current = tasks;
+  }, [tasks]);
 
-  const fetchRemote = useCallback(async () => {
+  const fetchRemote = useCallback(async (forUserId?: string) => {
     if (!supabase) return;
+    const owner = forUserId ?? userId;
+    if (owner === GUEST_ID) return;
+    const myReq = ++requestId.current;
     setIsLoading(true);
     setError(null);
     try {
       const { data, error: err } = await supabase
         .from('tasks')
         .select()
+        .eq('user_id', owner)
         .order('due_at', { ascending: true });
       if (err) throw err;
-      setTasks(((data ?? []) as TaskRow[]).map(fromRow));
+      if (myReq !== requestId.current) return; // stale response — ignore
+      const mapped = ((data ?? []) as TaskRow[]).map(fromRow);
+      // Merge: keep local optimistic tasks not yet on server instead of clobbering.
+      setTasks((prev) => {
+        const remoteIds = new Set(mapped.map((t) => t.id));
+        const localOnly = prev.filter((t) => !remoteIds.has(t.id) && t.userId === owner);
+        return [...mapped, ...localOnly];
+      });
     } catch (e) {
+      if (myReq !== requestId.current) return;
       setError(e instanceof Error ? e.message : 'Could not load tasks');
     } finally {
-      setIsLoading(false);
+      if (myReq === requestId.current) setIsLoading(false);
     }
-  }, []);
+  }, [userId]);
 
   // Sync when the signed-in user changes; guests keep local seed data.
   useEffect(() => {
     if (remote) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
-      fetchRemote().catch(() => {});
+      fetchRemote(userId).catch(() => {});
     } else {
-      setTasks(seedTasks());
+      setTasks((prev) => (prev.length > 0 && prev[0]?.userId === GUEST_ID ? prev : seedTasks()));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [remote, userId]);
 
-  const getById = useCallback((id: string) => tasks.find((t) => t.id === id), [tasks]);
+  const getById = useCallback((id: string) => tasksRef.current.find((t) => t.id === id), []);
 
-  const createTask = useCallback((t: Task) => {
+  const createTask = useCallback(async (t: Task) => {
     const stamped = { ...t, userId };
-    setTasks((prev) => [stamped, ...prev]);
+    setTasks((prev) => (prev.some((x) => x.id === stamped.id) ? prev : [stamped, ...prev]));
     if (remote && supabase) {
-      supabase
-        .from('tasks')
-        .insert(toRow(stamped))
-        .then(({ error: err }) => {
-          if (err) setError(`Saved locally — Supabase: ${err.message}`);
-        });
+      const { error: err } = await supabase.from('tasks').insert(toInsertRow(stamped));
+      if (err) setError(`Saved locally — Supabase: ${err.message}`);
     }
   }, [remote, userId]);
 
-  const updateTask = useCallback((t: Task) => {
-    setTasks((prev) => prev.map((x) => (x.id === t.id ? t : x)));
+  const updateTask = useCallback(async (t: Task) => {
+    // Never trust the form's userId — force the current owner.
+    const stamped = { ...t, userId };
+    setTasks((prev) => prev.map((x) => (x.id === stamped.id ? stamped : x)));
     if (remote && supabase) {
-      supabase
+      const { error: err } = await supabase
         .from('tasks')
-        .update(toRow(t))
-        .eq('id', t.id)
-        .then(({ error: err }) => {
-          if (err) setError(`Saved locally — Supabase: ${err.message}`);
-        });
+        .update(toUpdateRow(stamped))
+        .eq('id', stamped.id)
+        .eq('user_id', userId);
+      if (err) setError(`Saved locally — Supabase: ${err.message}`);
     }
-  }, [remote]);
+  }, [remote, userId]);
 
-  const toggleComplete = useCallback((id: string) => {
-    setTasks((prev) => {
-      const next = prev.map((t): Task => {
-        if (t.id !== id) return t;
-        const status: TaskStatus = t.status === 'completed' ? 'pending' : 'completed';
-        return { ...t, status };
-      });
-      const changed = next.find((t) => t.id === id);
-      if (changed && remote && supabase) {
-        supabase
-          .from('tasks')
-          .update({ status: changed.status })
-          .eq('id', id)
-          .then(({ error: err }) => {
-            if (err) setError(`Saved locally — Supabase: ${err.message}`);
-          });
-      }
-      return next;
-    });
-  }, [remote]);
+  const toggleComplete = useCallback(async (id: string) => {
+    const current = tasksRef.current.find((t) => t.id === id);
+    if (!current) return;
+    const status: TaskStatus = current.status === 'completed' ? 'pending' : 'completed';
+    // Note: in_progress → completed on check; unchecking returns to pending
+    // (documented simplification for the demo core loop).
+    setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, status } : t)));
+    if (remote && supabase) {
+      const { error: err } = await supabase
+        .from('tasks')
+        .update({ status })
+        .eq('id', id)
+        .eq('user_id', userId);
+      if (err) setError(`Saved locally — Supabase: ${err.message}`);
+    }
+  }, [remote, userId]);
 
-  const deleteTask = useCallback((id: string) => {
+  const deleteTask = useCallback(async (id: string) => {
+    const snapshot = tasksRef.current;
     setTasks((prev) => prev.filter((t) => t.id !== id));
     if (remote && supabase) {
-      supabase
+      const { error: err } = await supabase
         .from('tasks')
         .delete()
         .eq('id', id)
-        .then(({ error: err }) => {
-          if (err) setError(`Deleted locally — Supabase: ${err.message}`);
-        });
+        .eq('user_id', userId);
+      if (err) {
+        // Roll back on sync failure so local list never diverges silently.
+        setTasks(snapshot);
+        setError(`Delete failed — Supabase: ${err.message}`);
+      }
     }
-  }, [remote]);
+  }, [remote, userId]);
 
-  const refresh = useCallback(() => {
-    if (remote) fetchRemote().catch(() => {});
-  }, [remote, fetchRemote]);
+  const refresh = useCallback(async () => {
+    if (remote) await fetchRemote(userId).catch(() => {});
+  }, [remote, fetchRemote, userId]);
 
   const setSessionStatus = useCallback((_taskId: string, _status: string) => {
     // Sessions live in plan screen state; kept for API parity with Flutter service.
   }, []);
 
-  const value = useMemo<TasksState>(() => {
+  const value = useMemo(() => {
     const pending = tasks.filter((t) => t.status !== 'completed');
     const completed = tasks.filter((t) => t.status === 'completed');
-    const urgent = [...pending].sort(
-      (a, b) => new Date(a.dueAt).getTime() - new Date(b.dueAt).getTime(),
-    );
+    const timeOf = (iso: string) => {
+      const ms = new Date(iso).getTime();
+      return Number.isNaN(ms) ? Number.POSITIVE_INFINITY : ms;
+    };
+    const urgent = [...pending].sort((a, b) => timeOf(a.dueAt) - timeOf(b.dueAt));
     return {
       tasks, isLoading, error,
       pendingTasks: pending, completedTasks: completed, urgentTasks: urgent,
